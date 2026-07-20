@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-app
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: flask-app
+  template:
+    spec:
+      containers:
+      - name: flask-app
+        image: ghcr.io/abhijeetnagar56/flask-app:stable
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

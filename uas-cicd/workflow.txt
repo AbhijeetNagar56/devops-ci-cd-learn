@@ -1,0 +1,3 @@
+               ┌─── [ Job: Test & Build Backend ]  ───► Push Image ───┐
+── Git Push ───┤                                                      ├───► [ Job: Deploy to Render ]
+               └─── [ Job: Test & Build Frontend ] ───► Push Image ───┘
