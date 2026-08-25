@@ -1,23 +1,26 @@
-FROM golang:1.25 As builder
+# Build stage
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
 COPY go.mod ./
-
-RUN go mod tidy
+RUN go mod download
 
 COPY . .
 
-RUN go build -o server main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o server .
 
-FROM ubuntu:24.04
+# Runtime stage
+FROM alpine:3.20
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
 COPY --from=builder /app/server .
 
-EXPOSE 8080
+EXPOSE 3000
 
-CMD ["./server"]
+USER nobody:nobody
+
+ENTRYPOINT ["./server"]
