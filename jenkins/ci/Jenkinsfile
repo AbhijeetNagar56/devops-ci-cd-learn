@@ -1,0 +1,189 @@
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins-agent: go-cicd
+spec:
+  containers:
+    - name: golang
+      image: golang:1.23-alpine
+      command: ['cat']
+      tty: true
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "256Mi"
+    - name: docker
+      image: docker:27-cli
+      command: ['cat']
+      tty: true
+      volumeMounts:
+        - mountPath: /var/run/docker.sock
+          name: docker-sock
+    - name: terraform
+      image: hashicorp/terraform:1.9.2
+      command: ['cat']
+      tty: true
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+    - name: kubectl
+      image: bitnami/kubectl:latest
+      command: ['cat']
+      tty: true
+  volumes:
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
+'''
+        }
+    }
+
+    environment {
+        DOCKER_REGISTRY       = 'docker.io'
+        DOCKER_IMAGE          = 'abhijeetnagar56/go-basic-server'
+        IMAGE_TAG             = "${env.BUILD_NUMBER}"
+        DOCKER_CREDENTIALS_ID = 'dockerhub-credentials'
+        APP_DIR               = 'jenkins/app'
+        TF_DIR                = 'jenkins/terraform'
+        K8S_NAMESPACE         = 'go-backend-app'
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+        ansiColor('xterm')
+    }
+
+    parameters {
+        choice(name: 'ACTION', choices: ['apply', 'plan', 'destroy'], description: 'Terraform deployment action')
+        booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Run Go unit tests and linting')
+        booleanParam(name: 'BUILD_IMAGE', defaultValue: true, description: 'Build and push Docker image')
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Go Lint & Test') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                container('golang') {
+                    dir("${env.APP_DIR}") {
+                        sh '''
+                            echo "=== Running Go Verification & Tests ==="
+                            go version
+                            go vet ./...
+                            go test -v -coverprofile=coverage.out ./...
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            when {
+                expression { params.BUILD_IMAGE == true && params.ACTION != 'destroy' }
+            }
+            steps {
+                container('docker') {
+                    dir("${env.APP_DIR}") {
+                        withCredentials([usernamePassword(
+                            credentialsId: env.DOCKER_CREDENTIALS_ID,
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )]) {
+                            sh '''
+                                echo "=== Logging in to Docker Hub ==="
+                                echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+                                echo "=== Building Docker Image ==="
+                                docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} -t ${DOCKER_IMAGE}:latest -f dockerfile .
+
+                                echo "=== Pushing Docker Image ==="
+                                docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
+                                docker push ${DOCKER_IMAGE}:latest
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                container('terraform') {
+                    dir("${env.TF_DIR}") {
+                        sh '''
+                            echo "=== Initializing Terraform ==="
+                            terraform init
+
+                            echo "=== Validating Terraform Configuration ==="
+                            terraform validate
+
+                            echo "=== Running Terraform Plan ==="
+                            if [ "${ACTION}" = "destroy" ]; then
+                                terraform plan -destroy -var="app_image=${DOCKER_IMAGE}:${IMAGE_TAG}" -out=tfplan
+                            else
+                                terraform plan -var="app_image=${DOCKER_IMAGE}:${IMAGE_TAG}" -out=tfplan
+                            fi
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Apply / Destroy') {
+            steps {
+                container('terraform') {
+                    dir("${env.TF_DIR}") {
+                        sh '''
+                            echo "=== Executing Terraform ${ACTION} ==="
+                            terraform apply -auto-approve tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                container('kubectl') {
+                    sh '''
+                        echo "=== Verifying Kubernetes Rollout ==="
+                        kubectl rollout status deployment/go-deployment -n ${K8S_NAMESPACE} --timeout=90s
+
+                        echo "=== Kubernetes Resources in ${K8S_NAMESPACE} ==="
+                        kubectl get pods,svc,deploy -n ${K8S_NAMESPACE} -o wide
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "Pipeline succeeded! Go App built and deployed to Kubernetes cluster."
+        }
+        failure {
+            echo "Pipeline failed. Check the logs above for troubleshooting."
+        }
+    }
+}
