@@ -11,11 +11,14 @@ func defaultHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Status: online")
+	fprintf, err := fmt.Fprintf(w, "Status: online")
+	if err != nil {
+		return
+	}
 }
 
 func greetHandler(res http.ResponseWriter, req *http.Request) {
-	fmt.Fprintf(res, "hello World")
+	_, _ = fmt.Fprintf(res, "hello World")
 }
 
 func main() {
